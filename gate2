@@ -1,0 +1,48 @@
+#!/bin/bash
+# gate.sh - Instant Egress Toggle for Vaults
+
+if [ "$EUID" -ne 0 ]; then
+  echo "[!] Please run as root: sudo ./gate.sh <open|close> <vault-name>"
+  exit 1
+fi
+
+ACTION="$1"
+VAULT_NAME="$2"
+
+if [[ "$ACTION" != "open" && "$ACTION" != "close" ]] || [ -z "$VAULT_NAME" ]; then
+    echo "Usage: sudo ./gate.sh <open|close> <vault-name>"
+    echo "Example: sudo ./gate.sh open pi-local"
+    exit 1
+fi
+
+if ! virsh net-info "$VAULT_NAME" &>/dev/null; then
+    echo "[!] Error: Network '$VAULT_NAME' is not running."
+    exit 1
+fi
+
+# Clean up any previous gate rules to prevent duplication
+iptables -D FORWARD -i "$VAULT_NAME" -p tcp -m multiport --dports 80,443 -j ACCEPT 2>/dev/null || true
+iptables -D FORWARD -i "$VAULT_NAME" -d 192.168.0.0/16 -j DROP 2>/dev/null || true
+iptables -D FORWARD -i "$VAULT_NAME" -d 10.0.0.0/8 -j DROP 2>/dev/null || true
+iptables -D FORWARD -i "$VAULT_NAME" -d 172.16.0.0/12 -j DROP 2>/dev/null || true
+iptables -D FORWARD -i "$VAULT_NAME" -j DROP 2>/dev/null || true
+
+if [ "$ACTION" == "open" ]; then
+    # 1. Drop LAN scanning (Protects your home network)
+    iptables -I FORWARD 1 -i "$VAULT_NAME" -d 192.168.0.0/16 -j DROP
+    iptables -I FORWARD 2 -i "$VAULT_NAME" -d 10.0.0.0/8 -j DROP
+    iptables -I FORWARD 3 -i "$VAULT_NAME" -d 172.16.0.0/12 -j DROP
+
+    # 2. Allow Web Traffic (Goes above the LAN drops)
+    iptables -I FORWARD 1 -i "$VAULT_NAME" -p tcp -m multiport --dports 80,443 -j ACCEPT
+
+    # 3. Drop everything else outbound
+    iptables -A FORWARD -i "$VAULT_NAME" -j DROP
+
+    echo "[+] GATE OPENED for $VAULT_NAME (Web allowed, LAN blocked)"
+
+elif [ "$ACTION" == "close" ]; then
+    # Absolute zero egress. The VM cannot reach anything but the host Ollama socket.
+    iptables -I FORWARD 1 -i "$VAULT_NAME" -j DROP
+    echo "[x] GATE CLOSED for $VAULT_NAME (Strict Airgap Enforced)"
+fi
