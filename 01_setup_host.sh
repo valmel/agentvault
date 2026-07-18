@@ -1,17 +1,24 @@
 #!/bin/bash
 # 01_setup_host.sh
 
-# Auto-detect the real non-root user who ran sudo
-TARGET_USER="${SUDO_USER:-$1}"
-
-if [ -z "$TARGET_USER" ] || [ "$TARGET_USER" == "root" ]; then
-    echo "Error: Could not auto-detect your non-root username."
-    echo "Usage: sudo ./01_setup_host.sh [optional-vault-network-name]"
-    exit 1
+# Smart argument parsing based on execution context
+if [ -n "$SUDO_USER" ]; then
+    # Ran with 'sudo' -> Target user is known. $1 is the vault name.
+    TARGET_USER="$SUDO_USER"
+    VAULT_NET="${1:-aider-vault}"
+else
+    # Ran directly as root -> We need the username explicitly as $1.
+    TARGET_USER="$1"
+    VAULT_NET="${2:-aider-vault}"
 fi
 
-# Fallback to 'aider-vault' if no network name is passed as an argument
-VAULT_NET="${2:-aider-vault}"
+# Sanity check
+if [ -z "$TARGET_USER" ] || [ "$TARGET_USER" == "root" ]; then
+    echo "Error: Could not determine the target non-root user."
+    echo "Usage (if using sudo):   sudo ./01_setup_host.sh [optional-vault-network]"
+    echo "Usage (if already root): ./01_setup_host.sh <your-linux-username> [optional-vault-network]"
+    exit 1
+fi
 
 echo "[-] Target User identified as: $TARGET_USER"
 echo "[-] Target Vault Network set to: $VAULT_NET"
@@ -46,7 +53,7 @@ sudo -u "$TARGET_USER" git config --global --unset-all safe.directory "^${SHARE_
 # Inject the fresh trust exception (guaranteed to only be a single line now)
 sudo -u "$TARGET_USER" git config --global --add safe.directory "$SHARE_DIR/*"
 
-echo "[+] Shared directory ready at $SHARE_DIR (Permissions tuned for Libvirt)."
+echo "[+] Shared directory ready at $SHARE_DIR"
 
 echo "[-] Creating Modular Libvirt Hook Infrastructure..."
 sudo mkdir -p /etc/libvirt/hooks/network.d
@@ -69,9 +76,9 @@ EOF
 sudo chmod +x /etc/libvirt/hooks/network
 
 # 2. Create your isolated network-dependent script inside network.d/
-cat << EOF | sudo tee /etc/libvirt/hooks/network.d/vault_$VAULT_NET > /dev/null
+cat << EOF | sudo tee /etc/libvirt/hooks/network.d/$VAULT_NET > /dev/null
 #!/bin/bash
-# /etc/libvirt/hooks/network.d/vault_$VAULT_NET
+# /etc/libvirt/hooks/network.d/$VAULT_NET
 
 HOOK_NETWORK="\$1"
 ACTION="\$2"
@@ -92,15 +99,15 @@ if [ "\$HOOK_NETWORK" == "$VAULT_NET" ]; then
         iptables -I LIBVIRT_INP 5 -i "\$HOOK_NETWORK" -p tcp -m state --state NEW -j DROP 2>/dev/null
 
     elif [ "\$ACTION" == "stopped" ]; then
-        iptables -D LIBVIRT_INP -i "\$HOOK_NETWORK" -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null
-        iptables -D LIBVIRT_INP -i "\$HOOK_NETWORK" -p tcp --dport 11434 -j ACCEPT 2>/dev/null
-        iptables -D LIBVIRT_INP -i "\$HOOK_NETWORK" -p udp --dport 67 -j ACCEPT 2>/dev/null
-        iptables -D LIBVIRT_INP -i "\$HOOK_NETWORK" -p udp --dport 53 -j ACCEPT 2>/dev/null
-        iptables -D LIBVIRT_INP -i "\$HOOK_NETWORK" -p tcp -m state --state NEW -j DROP 2>/dev/null
+        iptables -D LIBVIRT_INP -i "\$HOOK_NETWORK" -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
+        iptables -D LIBVIRT_INP -i "\$HOOK_NETWORK" -p tcp --dport 11434 -j ACCEPT 2>/dev/null || true
+        iptables -D LIBVIRT_INP -i "\$HOOK_NETWORK" -p udp --dport 67 -j ACCEPT 2>/dev/null || true
+        iptables -D LIBVIRT_INP -i "\$HOOK_NETWORK" -p udp --dport 53 -j ACCEPT 2>/dev/null || true
+        iptables -D LIBVIRT_INP -i "\$HOOK_NETWORK" -p tcp -m state --state NEW -j DROP 2>/dev/null || true
     fi
 fi
 EOF
-sudo chmod +x /etc/libvirt/hooks/network.d/vault_$VAULT_NET
+sudo chmod +x /etc/libvirt/hooks/network.d/$VAULT_NET
 
 echo "[-] Restarting Libvirt to register the master multiplexer hook..."
 sudo systemctl restart libvirtd
@@ -108,4 +115,26 @@ sudo systemctl restart libvirtd
 echo "[-] Granting hypervisor permissions to $TARGET_USER..."
 sudo usermod -aG libvirt,kvm "$TARGET_USER"
 
-echo "[-] Host Infrastructure Ready. Target network '$VAULT_NET' is protected."
+echo ""
+echo "====================================================================="
+echo " [SUCCESS] HOST INFRASTRUCTURE READY"
+echo "====================================================================="
+echo " Shared Directory: $SHARE_DIR"
+echo " Network Profile:  $VAULT_NET"
+echo "====================================================================="
+echo ""
+echo " [!] CRITICAL ACTION REQUIRED BEFORE PROCEEDING [!]"
+echo " Your user account ($TARGET_USER) was just added to the required"
+echo " hypervisor security groups (libvirt, kvm)."
+echo ""
+echo " Your active terminal DOES NOT have these permissions yet."
+echo " If you proceed immediately, the next script will crash or prompt"
+echo " for unexpected passwords."
+echo ""
+echo " TO FIX THIS, DO ONE OF THE FOLLOWING NOW:"
+echo "   Option A: Close this terminal completely and open a new one."
+echo "   Option B: Run these two commands manually:"
+echo "             newgrp libvirt"
+echo "             newgrp kvm"
+echo "====================================================================="
+echo ""

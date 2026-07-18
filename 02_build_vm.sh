@@ -9,6 +9,7 @@ fi
 
 VM_NAME="$1"
 DISK_PATH="/var/lib/libvirt/images/${VM_NAME}.qcow2"
+#DISK_PATH="/spool/vms/libvirt/${VM_NAME}.qcow2"
 
 BASE_URL="https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/"
 ISO_FILE=$(curl -s "$BASE_URL" | grep -Eo 'debian-[0-9\.]+-amd64-netinst\.iso' | head -n 1)
@@ -86,7 +87,7 @@ virt-install \
   --ram 4096 \
   --vcpus 2 \
   --memorybacking access.mode=shared \
-  --disk path=$DISK_PATH,size=20 \
+  --disk path=$DISK_PATH,size=7 \
   --os-variant "$OS_VARIANT" \
   --network network=default \
   --location "$ISO_PATH" \

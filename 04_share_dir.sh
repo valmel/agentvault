@@ -1,16 +1,19 @@
 #!/bin/bash
-# 04_share_dir.sh (VIRTIOFS UPGRADE)
+# 04_share_dir.sh
 
 if [ "$#" -ne 2 ]; then
     echo "Usage: ./04_share_dir.sh <vm-name> <absolute-path-to-host-dir>"
     echo "Example: ./04_share_dir.sh aider-vault /home/$USER/aider"
+    echo "Example: ./04_share_dir.sh ag-vault /home/$USER/antigravity_workspace"
     exit 1
 fi
 
 VM_NAME="$1"
 HOST_DIR=$(realpath "$2")
+# Dynamically extract the folder name from your host path
+GUEST_FOLDER=$(basename "$HOST_DIR")
 USERNAME="agent"
-PASSWORD="password123"
+SSH_KEY="$HOME/.ssh/id_ed25519"
 
 if [ ! -d "$HOST_DIR" ]; then
     echo "[!] Error: Host directory '$HOST_DIR' does not exist."
@@ -19,7 +22,7 @@ fi
 
 echo "[-] Waking up $VM_NAME to configure the shared directory..."
 if ! virsh list | grep -q " $VM_NAME .*running"; then
-    virsh start $VM_NAME
+    virsh start "$VM_NAME"
     echo "[-] Waiting 30 seconds for the VM to boot..."
     sleep 30
 fi
@@ -52,34 +55,40 @@ cat <<EOF > /tmp/fs_${VM_NAME}.xml
 EOF
 
 # Attach persistently to the VM config
-virsh attach-device "$VM_NAME" /tmp/fs_${VM_NAME}.xml --config
+virsh attach-device "$VM_NAME" "/tmp/fs_${VM_NAME}.xml" --config
 # Attach to the running instance
-virsh attach-device "$VM_NAME" /tmp/fs_${VM_NAME}.xml --live 2>/dev/null
-rm /tmp/fs_${VM_NAME}.xml
+virsh attach-device "$VM_NAME" "/tmp/fs_${VM_NAME}.xml" --live 2>/dev/null
+rm "/tmp/fs_${VM_NAME}.xml"
 
 echo "[-] Executing remote mount configuration inside VM via SSH..."
 cat <<EOF > /tmp/remote_mount.sh
 #!/bin/bash
 set -e
 
-echo "[-] Creating guest mount point..."
-mkdir -p /home/$USERNAME/aider
+echo "[-] Creating guest mount point: /home/$USERNAME/$GUEST_FOLDER"
+mkdir -p /home/$USERNAME/$GUEST_FOLDER
 
 echo "[-] Adding share entry to /etc/fstab with systemd safeguards..."
 # Clean existing vault_share entries out to avoid duplication loops
 sed -i '/vault_share/d' /etc/fstab
-echo 'vault_share /home/$USERNAME/aider virtiofs x-systemd.automount,rw,nofail 0 0' >> /etc/fstab
+echo "vault_share /home/$USERNAME/$GUEST_FOLDER virtiofs x-systemd.automount,rw,nofail 0 0" >> /etc/fstab
 
 echo "[-] Refreshing storage targets inside the guest kernel..."
 systemctl daemon-reload
 systemctl restart local-fs.target || true
+
+# Ensure the agent user owns the mount point from the inside
+chown $USERNAME:$USERNAME /home/$USERNAME/$GUEST_FOLDER
 EOF
 chmod +x /tmp/remote_mount.sh
 
-# Push and execute the mount script as root
-scp -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null /tmp/remote_mount.sh $USERNAME@$VM_IP:/tmp/
-ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null $USERNAME@$VM_IP "sudo bash /tmp/remote_mount.sh"
+# Push and execute the mount script as root via user-space SSH
+scp -i "$SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null /tmp/remote_mount.sh "$USERNAME@$VM_IP:/tmp/"
+ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$USERNAME@$VM_IP" "sudo bash /tmp/remote_mount.sh"
 
 rm -f /tmp/remote_mount.sh
 
+echo "---"
 echo "[+] SUCCESS! High-speed virtiofs link established."
+echo "    Host Directory:  $HOST_DIR"
+echo "    Guest Directory: /home/$USERNAME/$GUEST_FOLDER"

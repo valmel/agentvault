@@ -58,7 +58,6 @@ set -e
 
 echo "[-] Updating apt registries..."
 apt-get update
-
 echo "[-] Installing system build essentials..."
 apt-get install -y curl git build-essential
 
