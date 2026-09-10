@@ -401,6 +401,7 @@ d-i pkgsel/include string python3-pip python3-venv git curl build-essential pyth
 d-i grub-installer/only_debian boolean true
 d-i grub-installer/bootdev string /dev/vda
 d-i preseed/late_command string in-target sh -c 'sed -i "s/^GRUB_CMDLINE_LINUX_DEFAULT.*/GRUB_CMDLINE_LINUX_DEFAULT=\"console=ttyS0,115200n8\"/" /etc/default/grub; update-grub; systemctl enable serial-getty@ttyS0.service; echo "$GUEST_USER ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/$GUEST_USER; chmod 0440 /etc/sudoers.d/$GUEST_USER'
+d-i preseed/late_command string in-target sh -c 'sed -i "s/^GRUB_CMDLINE_LINUX_DEFAULT.*/GRUB_CMDLINE_LINUX_DEFAULT=\"console=ttyS0,115200n8\"/" /etc/default/grub; update-grub; systemctl enable serial-getty@ttyS0.service; echo "$GUEST_USER ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/$GUEST_USER; chmod 0440 /etc/sudoers.d/$GUEST_USER; rm -f /etc/machine-id /var/lib/dbus/machine-id; touch /etc/machine-id'
 d-i finish-install/reboot_in_progress note
 d-i debian-installer/exit/poweroff boolean true
 EOF
