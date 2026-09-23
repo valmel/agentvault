@@ -3,17 +3,31 @@
 
 AgentVault (`forge.sh`) automatically provisions mathematically sealed or strictly
 filtered Debian VMs specifically designed to run tools like [Aider](https://aider.chat/),
-Claude Code, and OpenCode in total isolation. It handles host setup, Golden-Image
+Claude Code, Pi, and DeepSeek in total isolation. It handles host setup, Golden-Image
 Copy-on-Write (COW) cloning, `virtiofs` workspace mounting, dynamic Layer 7 proxy
-enforcement, and local-inference relay routing in a single parametric command.
+enforcement, and universal AI gateway routing in a single parametric command.
 
 ### 🛑 Prerequisites
 - A Debian/Ubuntu-based host machine.
 - Hardware virtualization (VT-x/AMD-V) enabled in BIOS.
 - Root privileges (`sudo`) to manage Libvirt networks, KVM domains, and host firewalls.
+- **Python 3 / pip** on the host for the LiteLLM universal gateway.
 - *Note: The guest VM hardcodes the user as `agent` with password `password123`.
 This is intentional for unattended automation and completely safe, as the VM is
 physically firewalled from the network and strictly enforces ED25519 key-pair SSH access.*
+
+---
+
+## 🏛️ The Architecture: Universal AI Gateway & Zero Secrets
+
+Past iterations of AgentVault attempted to manage API keys and cloud dependencies
+directly inside the VM. This proved to be a configuration nightmare, leading to leaked
+secrets, fragmented billing, and endless dependency conflicts.
+
+AgentVault now enforces a **Facade Architecture**:
+1. **The Host is the Brain:** You manually configure `litellm` (and local runners like `llama.cpp`, `ollama`, or `vllm`) directly on your host machine. Your API keys (OpenRouter, Google, Anthropic) live securely on the host.
+2. **The Vault is Dumb:** The VM holds **zero secrets**. It thinks it is talking to standard local OpenAI endpoints.
+3. **The Bridge is Universal:** AgentVault automatically opens local `socat` relays across the isolated KVM network bridge. Whether the vault is `airgapped` (local AI only), `local` (whitelisted egress + local AI), or `cloud` (whitelisted egress + cloud/local AI), the AI intelligence can be hot-swapped dynamically from inside the VM without rebuilding the infrastructure.
 
 ---
 
@@ -28,26 +42,40 @@ CLI flags or permanently customized inside `~/.config/agentvault/forge.conf`.
 ```
 
 ### Supported Flags & Parameters
-| Flag | Description | Choices / Default |
-| :--- | :--- | :--- |
-| `--agent` | The coding agent toolchain to install | `aider`, `antigravity`, `claude`, `opencode`, `pi`, `deepseek` (**Required**) |
-| `--provider` | The AI inference backend or service | `llama`, `ollama`, `vllm`, `openrouter`, `google`, `anthropic`, `openai` (default: `llama`) |
-| `--type` | Network security posture | `restricted` (whitelisted egress) or `airgapped` (default: `airgapped`) |
-| `--key` | API key for cloud providers | Required if using cloud-backed providers |
-| `--ram` | Override default guest RAM in MB | Default: `4096` |
-| `--vcpus` | Override guest vCPU count | Default: `2` |
-| `--disk` | Override guest disk size in GB | Default: `7` |
-| `--name` | Custom override for the VM/workspace name | Auto-generated as `<agent>-<provider>-<type>` |
+| Flag | Description | Choices / Default                                                                                                                                             |
+| :--- | :--- |:--------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `--agent` | The coding agent toolchain to install | `aider`, `antigravity`, `claude`, `opencode`, `pi`, `deepseek` (**Required**)                                                                                 |
+| `--type` | Network security posture | `cloud` (whitelisted egress + local/cloud AI), `local` (whitelisted egress + local AI only), or `airgapped` (no egress, local AI only) (default: `airgapped`) |
+| `--ram` | Override default guest RAM in MB | Default: `4096`                                                                                                                                               |
+| `--vcpus` | Override guest vCPU count | Default: `2`                                                                                                                                                  |
+| `--disk` | Override guest disk size in GB | Default: `7`                                                                                                                                                  |
+| `--name` | Custom override for the VM/workspace name | Auto-generated as `<agent>-<type>`                                                                                                                            |
 
 ### Deployment Examples
-1. **Air-gapped local Ollama vault with Aider:**
+1. **An airgapped vault for local DeepSeek Harness (No internet access):**
    ```bash
-   sudo ./forge.sh --agent=aider --provider=ollama --type=airgapped
+   sudo ./forge.sh --agent=deepseek --type=airgapped
    ```
-2. **Surgically restricted cloud vault with Claude Code and Anthropic API:**
+2. **A cloud vault for Pi (Allows NPM installs and LiteLLM cloud access):**
    ```bash
-   sudo ./forge.sh --agent=claude --provider=anthropic --type=restricted --key="sk-ant-..."
+   sudo ./forge.sh --agent=pi --type=cloud
    ```
+
+---
+
+## 🧩 Modular Harness Plugins
+
+Because every AI coding agent requires unique configuration files (JSON, YAML, ENV) and installation paths, AgentVault uses a **Modular Subscript System**.
+
+Users are expected to define their specific tool setups in the `./harnesses/` directory. When `forge.sh` runs, it dynamically injects variables (`$BRIDGE_IP`, `$GUEST_USER`) into these scripts to seamlessly configure the VM.
+
+*(More official harness examples will be added in the future).*
+
+### Example 1: Local Setup (DeepSeek on Llama.cpp)
+**File: `harnesses/deepseek.sh`**
+
+### Example 2: Cloud Setup (Pi on LiteLLM)
+**File: `harnesses/pi.sh`**
 
 ---
 
@@ -58,7 +86,7 @@ Protect your main production repository by isolating code execution. AgentVault 
 ### 1. Locate your workspace
 When a vault is created, a shared folder is automatically provisioned at `~/harness_workspaces/<vm-name>`. Clone your sandbox project inside it.
 ```bash
-   cd ~/harness_workspaces/aider-ollama-airgapped
+   cd ~/harness_workspaces/aider-cloud
    git clone /path/to/your/production/repo secure-sandbox
    cd secure-sandbox
 ```
@@ -78,18 +106,16 @@ Ensure no active `.env` files, API tokens, or private keys bleed into the sandbo
 ### 4. Execute the agent
 Enter the vault via the automatically generated SSH alias and launch your agent.
 ```bash
-   ssh aider-ollama-airgapped
-
-   # Inside the guest VM:
-   cd ~/aider-ollama-airgapped/...
+   ssh aider-cloud
+   cd ~/aider-cloud/secure-sandbox
    aider
 ```
 
 ### 5. Audit and merge
-Inspect the agent's changes locally on your host. If the logic is sound, pull the sandboxed commits back into your production repository.
+Inspect changes locally on your host. If sound, pull them back into production.
 ```bash
    cd /path/to/your/production/repo
-   git pull ~/harness_workspaces/aider-ollama-airgapped/secure-sandbox
+   git pull ~/harness_workspaces/aider-cloud/secure-sandbox
 ```
 
 ---
@@ -98,28 +124,21 @@ Inspect the agent's changes locally on your host. If the logic is sound, pull th
 AgentVault abandons leaky Docker containers in favor of hardware-backed KVM virtualization, utilizing advanced L3/L7 network enforcement.
 
 * **Layer 3 Blackout:** `iptables` Libvirt hooks explicitly `DROP` all `FORWARD` traffic originating from the VM. The guest OS lacks direct IP routing to the internet or local subnets.
-* **Layer 7 Surgical Least-Privilege Proxy (`--type=restricted`):** Rather than allowing blind TCP egress, forge.sh installs **Squid proxy** on the host.
-It dynamically generates a specific whitelist file (`/etc/agentvault/whitelists/<vm-name>.txt`) bound strictly
-to the VM's unique `/24` subnet. An Anthropic agent is mathematically incapable of reaching OpenAI's API.
-* **Sudo-Proof Configuration:** Proxies for APT, PIP, and NPM are locked at the global system configuration level 
-(`/etc/apt/apt.conf.d/00proxy`, `/etc/pip.conf`). They survive `sudo` environment stripping, ensuring autonomous agents 
-seamlessly fetch dependencies without hanging.
-* **The VirtioFS Bridge:** AgentVault utilizes `virtiofs`, allowing the guest OS to read host workspace files directly from RAM without network overhead of SMB/NFS mounts.
-* **Local Inference Relay:** Automatically provisions dynamic `socat` systemd services to safely bridge host inference engines (Ollama, vLLM, Llama.cpp) into air-gapped guests without exposing the host OS to the guest.
+* **Layer 7 Surgical Proxy (`--type=cloud` or `--type=local`):** Rather than allowing blind TCP egress, forge.sh configures a host-side **Squid proxy**. Access is strictly limited to OS and language package managers (APT, PyPI, NPM). 
+It dynamically generates a specific whitelist file (`/etc/agentvault/whitelists/<vm-name>.txt`) bound strictly to the VM's unique `/24` subnet.
+* **The VirtioFS Bridge:** Allows the guest OS to read host workspace files directly from RAM without network overhead.
+* **Universal Multi-Port Relay:** Dynamically provisions `socat` systemd services to safely bridge host inference engines (`8000`, `9931`, `11434`, and conditionally `4000` for cloud) into the guests without exposing the host OS.
 
 ---
 
 ## 🛠️ Companion Utilities
 
-Because true airgaps prevent routine dependency installation (`pip`, `apt`), AgentVault abandons bulky offline package caches in favor of a "Dead Man's Switch" workflow, accompanied by a nuclear teardown script.
-
 ### 1. The Dead Man's Switch (`gate.sh`)
-Provides instant, temporary internet access to a sealed vault for package installation, automatically slamming shut after 15 minutes. 
+Provides instant, temporary internet access to a sealed vault for package installation, automatically slamming shut after 15 minutes.
 
 **Usage:** `sudo ./gate.sh open <vault-name>`
 
 ### 2. The Nuclear Option (`burn-vaults.sh`)
-> **⚠️ WARNING: DESTRUCTIVE ACTION**  
-> This script irreparably vaporizes all running libvirt vaults `<agent>-<provider>-<type>`, purges their COW storage, flushes all `VFWD_` iptables chains, stops `socat` systemd relays, and sanitizes user SSH configs. Use this to instantly return the host to a clean baseline.
-
+> **⚠️ WARNING: DESTRUCTIVE ACTION**
+> Irreparably vaporizes all running vaults `<agent>-<type>`, purges COW storage, flushes `iptables` chains, stops `socat` relays, and sanitizes SSH configs.
 **Usage:** `sudo ./burn-vaults.sh`

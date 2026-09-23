@@ -7,7 +7,7 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # Strict regex matching the exact AgentVault naming combinations
-VAULT_REGEX="^(aider|antigravity|claude|opencode|pi|deepseek)-(llama|ollama|vllm|openrouter|google|anthropic|openai)-(airgapped|restricted)$"
+VAULT_REGEX="^(aider|antigravity|claude|opencode|pi|deepseek)-(cloud|local|airgapped)$"
 
 echo "======================================================="
 echo " [!] SURGICALLY VAPORIZING AGENT VAULTS"
@@ -38,8 +38,8 @@ for VM_NAME in "${TARGET_VMS[@]}"; do
     echo " -> Tearing down infrastructure for: $VM_NAME"
     NET_NAME="f-$(echo "$VM_NAME" | md5sum | cut -c1-10)"
 
-    # A. Systemd relays
-    for svc in /etc/systemd/system/*-relay-${VM_NAME}.service; do
+    # A. Systemd relays (wildcard catches both old and new relay names)
+    for svc in /etc/systemd/system/*relay*${VM_NAME}.service; do
         if [ -f "$svc" ]; then
             systemctl stop "$(basename "$svc")" 2>/dev/null || true
             systemctl disable "$(basename "$svc")" 2>/dev/null || true

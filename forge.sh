@@ -30,10 +30,8 @@ VM_DISK_SIZE="7"
 GUEST_USER="agent"
 GUEST_PASS="password123"
 SUBNET_PREFIX="192.168"
-VAULT_PORT="9931"
 NODE_VERSION="22.x"
 PYTHON_VERSION="3.12"
-LOCAL_DUMMY_KEY="sk-local"
 
 # B. Auto-generate config file if missing
 if [ ! -f "$CONFIG_FILE" ]; then
@@ -59,12 +57,10 @@ GUEST_PASS="$GUEST_PASS"
 
 # Networking
 SUBNET_PREFIX="$SUBNET_PREFIX"
-VAULT_PORT="$VAULT_PORT"
 
 # Agent Toolchains
 NODE_VERSION="$NODE_VERSION"
 PYTHON_VERSION="$PYTHON_VERSION"
-LOCAL_DUMMY_KEY="$LOCAL_DUMMY_KEY"
 EOF
     chown -R "$TARGET_USER:$TARGET_USER" "$CONFIG_DIR"
     chmod 644 "$CONFIG_FILE"
@@ -78,15 +74,11 @@ SSH_KEY="$BASE_DIR/.ssh/id_ed25519"
 VM_NAME=""
 AGENT_TYPE=""
 VAULT_TYPE="airgapped"
-PROVIDER="llama"
-API_KEY=""
 
 while [[ "$#" -gt 0 ]]; do
     case $1 in
         --agent=*) AGENT_TYPE="${1#*=}" ;;
-        --provider=*) PROVIDER="${1#*=}" ;;
         --type=*) VAULT_TYPE="${1#*=}" ;;
-        --key=*) API_KEY="${1#*=}" ;;
         --ram=*) VM_RAM="${1#*=}" ;;
         --vcpus=*) VM_VCPUS="${1#*=}" ;;
         --disk=*) VM_DISK_SIZE="${1#*=}" ;;
@@ -95,13 +87,11 @@ while [[ "$#" -gt 0 ]]; do
             echo "Usage: sudo ./forge.sh [-h|--help] [Options]"
             echo "Options:"
             echo "  --agent=<agent>              aider|antigravity|claude|opencode|pi|deepseek (Required)"
-            echo "  --provider=<service>         llama|ollama|vllm|openrouter|google|anthropic|openai (default: llama)"
-            echo "  --type=<mode>                Network Posture: airgapped or restricted (default: airgapped)"
-            echo "  --key=<api-key>              Required for cloud providers"
+            echo "  --type=<mode>                Network Posture: airgapped, local, or cloud (default: airgapped)"
             echo "  --ram=<MB>                   Override default RAM (e.g., 8192)"
             echo "  --vcpus=<count>              Override default vCPUs (e.g., 4)"
             echo "  --disk=<GB>                  Override default disk size (e.g., 15)"
-            echo "  --name=<name>                Override auto-generated vault name agent-provider-type"
+            echo "  --name=<name>                Override auto-generated vault name agent-type"
             exit 0 ;;
     esac
     shift
@@ -118,45 +108,13 @@ case "$AGENT_TYPE" in
     *) echo "[!] Error: Invalid agent '$AGENT_TYPE'."; exit 1 ;;
 esac
 
-case "$PROVIDER" in
-    llama|ollama|vllm|openrouter|google|anthropic|openai) ;;
-    *) echo "[!] Error: Invalid provider '$PROVIDER'."; exit 1 ;;
-esac
-
-if [[ "$VAULT_TYPE" != "airgapped" && "$VAULT_TYPE" != "restricted" ]]; then
-    echo "[!] Error: Invalid network posture type '$VAULT_TYPE'. Allowed values: airgapped, restricted."
+if [[ "$VAULT_TYPE" != "airgapped" && "$VAULT_TYPE" != "local" && "$VAULT_TYPE" != "cloud" ]]; then
+    echo "[!] Error: Invalid network posture type '$VAULT_TYPE'. Allowed values: airgapped, local, cloud."
     exit 1
 fi
 
-case "$PROVIDER" in
-    openrouter|google|anthropic|openai) INFERENCE_LOC="cloud" ;;
-    llama|ollama|vllm) INFERENCE_LOC="local" ;;
-    *) INFERENCE_LOC="local" ;;
-esac
-
-if [[ "$INFERENCE_LOC" == "cloud" && "$VAULT_TYPE" == "airgapped" ]]; then
-    echo "[!] Error: Cloud providers require internet access. You must use --type=restricted."
-    exit 1
-fi
-
-if [[ "$AGENT_TYPE" == "antigravity" && "$PROVIDER" != "google" ]]; then
-    echo "[~] Info: Antigravity requires Google provider. Forcing --provider=google."
-    PROVIDER="google"
-    INFERENCE_LOC="cloud"
-    if [ "$VAULT_TYPE" == "airgapped" ]; then
-        echo "[!] Error: Antigravity forced to Google, requiring --type=restricted."
-        exit 1
-    fi
-fi
-
-if [[ "$INFERENCE_LOC" == "cloud" && -z "$API_KEY" ]]; then
-    echo "[!] Error: Cloud providers require an API key (--key=...)"
-    exit 1
-fi
-
-# Auto-generate VM Name if omitted
 if [ -z "$VM_NAME" ]; then
-    VM_NAME="${AGENT_TYPE}-${PROVIDER}-${VAULT_TYPE}"
+    VM_NAME="${AGENT_TYPE}-${VAULT_TYPE}"
 fi
 
 # Define a safe network/bridge name under the 15-character Linux limit
@@ -166,28 +124,23 @@ ACL_ID="acl_$(echo "$VM_NAME" | md5sum | cut -c1-6)"
 HARNESS_DIR="$BASE_DIR/harness_workspaces"
 SHARE_DIR="$HARNESS_DIR/$VM_NAME"
 
-if [ "$INFERENCE_LOC" == "local" ]; then
-    case "$PROVIDER" in
-        llama)    HOST_PORT=9931 ;;
-        ollama)   HOST_PORT=11434 ;;
-        vllm)     HOST_PORT=8000 ;;
-        *)        HOST_PORT=9931 ;;
-    esac
-fi
-
 SUBNET_OCTET=$(echo "$VM_NAME" | cksum | awk '{print ($1 % 240) + 10}')
 BRIDGE_IP="${SUBNET_PREFIX}.${SUBNET_OCTET}.1"
 STATIC_VM_IP="${SUBNET_PREFIX}.${SUBNET_OCTET}.100"
 
+# Determine which ports we are opening for output summary
+if [ "$VAULT_TYPE" == "cloud" ]; then
+    GATEWAY_PORTS="4000 (Cloud), 8000, 9931, 11434 (Local)"
+else
+    GATEWAY_PORTS="8000, 9931, 11434 (Local Only)"
+fi
+
 echo "======================================================="
 echo " [~] INITIALIZING VAULT FORGE: $VM_NAME"
 echo " [~] Agent:        $AGENT_TYPE"
-echo " [~] Provider:     $PROVIDER ($INFERENCE_LOC)"
 echo " [~] Privacy type: $VAULT_TYPE"
 echo " [~] Hardware:     ${VM_VCPUS} vCPUs | ${VM_RAM}MB RAM | ${VM_DISK_SIZE}GB Disk"
-if [ "$INFERENCE_LOC" == "local" ]; then
-echo " [~] Engine Route: Host Port $HOST_PORT -> Vault Port $VAULT_PORT"
-fi
+echo " [~] AI Gateways:  Ports $GATEWAY_PORTS"
 echo " [~] Subnet:       ${SUBNET_PREFIX}.${SUBNET_OCTET}.0/24"
 echo " [~] Workspace:    ~/harness_workspaces/$VM_NAME"
 echo "======================================================="
@@ -199,8 +152,59 @@ setup_host() {
     echo -n "    -> Installing host packages... "
     apt update -yqq > /dev/null 2>&1
     #apt install -yqq qemu-kvm libvirt-daemon-system libvirt-clients virtinst socat curl virt-manager virtiofsd iptables sshpass > /dev/null 2>&1
-    apt install -yqq qemu-kvm libvirt-daemon-system libvirt-clients virtinst socat curl virt-manager iptables sshpass dpkg-dev squid > /dev/null 2>&1
+    apt install -yqq qemu-kvm libvirt-daemon-system libvirt-clients virtinst socat curl virt-manager iptables sshpass dpkg-dev squid python3-venv python3-pip > /dev/null 2>&1
     echo "OK"
+
+    # --- LITELLM HOST DAEMON SETUP ---
+    if [ "$VAULT_TYPE" == "cloud" ]; then
+        echo -n "    -> Provisioning Host LiteLLM Proxy... "
+        mkdir -p /etc/agentvault
+
+        if [ ! -d "/opt/litellm" ]; then
+            python3 -m venv /opt/litellm
+            /opt/litellm/bin/pip install 'litellm[proxy]' > /dev/null 2>&1
+        fi
+
+        # Generate a template ONLY if it doesn't exist. We never overwrite user config.
+        if [ ! -f /etc/agentvault/litellm.yaml ]; then
+            cat << 'EOF' > /etc/agentvault/litellm.yaml
+model_list:
+  # Example 1: Simple API Key (Anthropic)
+  - model_name: claude-sonnet
+    litellm_params:
+      model: anthropic/claude-3-5-sonnet-20241022
+      api_key: "sk-ant-..."
+
+  # Example 2: OpenRouter Setup (Zero GCP Auth required)
+  - model_name: or-gemini-3.8-flash
+    litellm_params:
+      model: openrouter/google/gemini-3.8-flash
+      api_key: "sk-or-v1-..."
+EOF
+        fi
+
+        if [ ! -f /etc/systemd/system/agentvault-litellm.service ]; then
+            cat << 'EOF' > /etc/systemd/system/agentvault-litellm.service
+[Unit]
+Description=AgentVault Host LiteLLM Proxy
+After=network.target
+
+[Service]
+ExecStart=/opt/litellm/bin/litellm --config /etc/agentvault/litellm.yaml --port 4000 --host 127.0.0.1
+Restart=always
+User=root
+
+[Install]
+WantedBy=multi-user.target
+EOF
+            systemctl daemon-reload
+            systemctl enable --now agentvault-litellm.service > /dev/null 2>&1
+        else
+            # Always restart to pick up any manual changes the user made
+            systemctl restart agentvault-litellm.service > /dev/null 2>&1
+        fi
+        echo "OK"
+    fi
 
     echo -n "    -> Configuring Layer 7 Modular Proxy (Squid)... "
     mkdir -p "$PROXY_CONF_DIR/whitelists"
@@ -227,37 +231,20 @@ http_port 0.0.0.0:8888
 EOF
     fi
 
-    # Generate the Least Privilege Whitelist for THIS vault
+    # The True Minimal Egress Whitelist (Zero Cloud API URLs needed)
     cat << 'EOF' > "$PROXY_CONF_DIR/whitelists/${VM_NAME}.txt"
 # --- Core OS Packages ---
 .debian.org
-
 # --- Python Ecosystem ---
 .pypi.org
 .pythonhosted.org
-
 # --- Node Ecosystem ---
 .npmjs.org
-#.yarnpkg.com
-
-# --- Microsoft / Code Hosting ---
-# .github.com
-# .githubusercontent.com
 EOF
 
     # Add tool-specific domains
     if [ "$AGENT_TYPE" == "aider" ]; then echo ".astral.sh" >> "$PROXY_CONF_DIR/whitelists/${VM_NAME}.txt"; fi
 
-    # Add provider-specific domains (Cloud only)
-    case "$PROVIDER" in
-        google)     echo ".googleapis.com" >> "$PROXY_CONF_DIR/whitelists/${VM_NAME}.txt" ;;
-        anthropic)  echo ".anthropic.com" >> "$PROXY_CONF_DIR/whitelists/${VM_NAME}.txt" ;;
-        openai)     echo ".openai.com" >> "$PROXY_CONF_DIR/whitelists/${VM_NAME}.txt" ;;
-        openrouter) echo ".openrouter.ai" >> "$PROXY_CONF_DIR/whitelists/${VM_NAME}.txt" ;;
-        deepseek)   echo ".deepseek.com" >> "$PROXY_CONF_DIR/whitelists/${VM_NAME}.txt" ;;
-    esac
-
-    # Bind the whitelist to the vault's specific subnet
     cat << EOF > /etc/squid/conf.d/${VM_NAME}.conf
 acl src_${ACL_ID} src ${SUBNET_PREFIX}.${SUBNET_OCTET}.0/24
 acl wl_${ACL_ID} dstdomain "$PROXY_CONF_DIR/whitelists/${VM_NAME}.txt"
@@ -267,11 +254,6 @@ EOF
     systemctl enable --now squid > /dev/null 2>&1
     systemctl reload squid
     echo "OK"
-
-    # Set up master harness workspace directory
-    mkdir -p "$HARNESS_DIR"
-    chown "$TARGET_USER:$TARGET_USER" "$HARNESS_DIR"
-    chmod 755 "$HARNESS_DIR"
 
     # Set up specific VM workspace
     mkdir -p "$SHARE_DIR"
@@ -324,10 +306,19 @@ if [ "\$HOOK_NETWORK" == "$NET_NAME" ]; then
         iptables -A "\$INP_CHAIN" -p udp --dport 67 -j ACCEPT
         iptables -A "\$INP_CHAIN" -p udp --dport 53 -j ACCEPT
         iptables -A "\$INP_CHAIN" -p tcp --dport 53 -j ACCEPT
-        iptables -A "\$INP_CHAIN" -p tcp --dport $VAULT_PORT -j ACCEPT
 
-        if [ "$VAULT_TYPE" == "restricted" ]; then
-            # Allow access to the Layer 7 Squid Proxy ONLY
+        # UNIVERSAL AI GATEWAY: Open local inference ports to the vault unconditionally
+        iptables -A "\$INP_CHAIN" -p tcp --dport 8000 -j ACCEPT  # vLLM
+        iptables -A "\$INP_CHAIN" -p tcp --dport 9931 -j ACCEPT  # Llama.cpp
+        iptables -A "\$INP_CHAIN" -p tcp --dport 11434 -j ACCEPT # Ollama
+
+        if [ "$VAULT_TYPE" == "cloud" ]; then
+            # Allow access to the LiteLLM Cloud Gateway
+            iptables -A "\$INP_CHAIN" -p tcp --dport 4000 -j ACCEPT
+        fi
+
+        if [[ "$VAULT_TYPE" == "cloud" || "$VAULT_TYPE" == "local" ]]; then
+            # Allow access to the Layer 7 Squid Proxy
             iptables -A "\$INP_CHAIN" -p tcp --dport 8888 -j ACCEPT
         fi
 
@@ -400,7 +391,6 @@ tasksel tasksel/first multiselect standard
 d-i pkgsel/include string python3-pip python3-venv git curl build-essential python3-dev openssh-server qemu-guest-agent unzip ripgrep fd-find
 d-i grub-installer/only_debian boolean true
 d-i grub-installer/bootdev string /dev/vda
-d-i preseed/late_command string in-target sh -c 'sed -i "s/^GRUB_CMDLINE_LINUX_DEFAULT.*/GRUB_CMDLINE_LINUX_DEFAULT=\"console=ttyS0,115200n8\"/" /etc/default/grub; update-grub; systemctl enable serial-getty@ttyS0.service; echo "$GUEST_USER ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/$GUEST_USER; chmod 0440 /etc/sudoers.d/$GUEST_USER'
 d-i preseed/late_command string in-target sh -c 'sed -i "s/^GRUB_CMDLINE_LINUX_DEFAULT.*/GRUB_CMDLINE_LINUX_DEFAULT=\"console=ttyS0,115200n8\"/" /etc/default/grub; update-grub; systemctl enable serial-getty@ttyS0.service; echo "$GUEST_USER ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/$GUEST_USER; chmod 0440 /etc/sudoers.d/$GUEST_USER; rm -f /etc/machine-id /var/lib/dbus/machine-id; touch /etc/machine-id'
 d-i finish-install/reboot_in_progress note
 d-i debian-installer/exit/poweroff boolean true
@@ -519,12 +509,15 @@ ENVEOF
 
 EOF
 
-    if [ "$VAULT_TYPE" == "restricted" ]; then
+    if [[ "$VAULT_TYPE" == "cloud" || "$VAULT_TYPE" == "local" ]]; then
         cat <<EOF >> /tmp/remote_deploy.sh
 echo 'export HTTP_PROXY="http://$BRIDGE_IP:8888"' >> /home/$GUEST_USER/.config/agentvault/env
 echo 'export HTTPS_PROXY="http://$BRIDGE_IP:8888"' >> /home/$GUEST_USER/.config/agentvault/env
 echo 'export http_proxy="http://$BRIDGE_IP:8888"' >> /home/$GUEST_USER/.config/agentvault/env
 echo 'export https_proxy="http://$BRIDGE_IP:8888"' >> /home/$GUEST_USER/.config/agentvault/env
+# CRITICAL: Exact IP match bypasses Node.js Proxy Agent logic
+echo 'export NO_PROXY="$BRIDGE_IP,localhost,127.0.0.1"' >> /home/$GUEST_USER/.config/agentvault/env
+echo 'export no_proxy="$BRIDGE_IP,localhost,127.0.0.1"' >> /home/$GUEST_USER/.config/agentvault/env
 EOF
     fi
 
@@ -543,55 +536,8 @@ echo "OK"
 EOF
     fi
 
-    # --- INJECT AGENT TOOLS ---
-    case "$AGENT_TYPE" in
-        aider)
-            cat <<EOF >> /tmp/remote_deploy.sh
-echo -n "    -> Installing Astral UV & Sandboxing Aider... "
-sudo -i -u $GUEST_USER curl -LsSf https://astral.sh/uv/install.sh | sudo -i -u $GUEST_USER sh >> \$LOG 2>&1 || { echo "FAIL"; exit 1; }
-sudo -i -u $GUEST_USER /home/$GUEST_USER/.local/bin/uv tool install --python $PYTHON_VERSION aider-chat >> \$LOG 2>&1 || { echo "FAIL"; exit 1; }
-echo "OK"
-EOF
-            ;;
-        antigravity)
-            cat <<EOF >> /tmp/remote_deploy.sh
-echo -n "    -> Installing Antigravity Engine... "
-sudo -i -u $GUEST_USER curl -fsSL https://antigravity.google/cli/install.sh | bash >> \$LOG 2>&1 || { echo "FAIL"; exit 1; }
-echo "OK"
-EOF
-            ;;
-        claude)
-            cat <<EOF >> /tmp/remote_deploy.sh
-echo -n "    -> Deploying Claude CLI Sandbox... "
-sudo npm install -g @anthropic-ai/claude-code >> \$LOG 2>&1 || { echo "FAIL"; exit 1; }
-echo "OK"
-EOF
-            ;;
-        opencode)
-            cat <<EOF >> /tmp/remote_deploy.sh
-echo -n "    -> Compiling OpenCode Binary... "
-sudo -i -u $GUEST_USER curl -fsSL https://opencode.ai/install | bash >> \$LOG 2>&1 || { echo "FAIL"; exit 1; }
-echo "OK"
-EOF
-            ;;
-        pi)
-            cat <<EOF >> /tmp/remote_deploy.sh
-echo -n "    -> Bootstrapping Pi Coding Agent... "
-sudo npm install -g --ignore-scripts @earendil-works/pi-coding-agent >> \$LOG 2>&1 || { echo "FAIL"; exit 1; }
-echo "OK"
-EOF
-            ;;
-        deepseek)
-            cat <<EOF >> /tmp/remote_deploy.sh
-echo -n "    -> Bootstrapping DeepSeek Harness... "
-sudo npm install -g --ignore-scripts @deepseek-ai/dsh >> \$LOG 2>&1 || { echo "FAIL"; exit 1; }
-echo "OK"
-EOF
-            ;;
-    esac
-
     # --- LOCK PROXIES ---
-    if [ "$VAULT_TYPE" == "restricted" ]; then
+    if [[ "$VAULT_TYPE" == "cloud" || "$VAULT_TYPE" == "local" ]]; then
         cat <<EOF >> /tmp/remote_deploy.sh
 echo -n "    -> Locking Package Managers (APT, NPM, PIP) to Squid... "
 EOF
@@ -616,60 +562,24 @@ echo "OK"
 EOF
     fi
 
-    # --- INJECT ENVIRONMENT ROUTING INTO .config/agentvault/env ---
-    echo -n "    -> Configuring AI Routing... "
-    if [ "$INFERENCE_LOC" == "local" ]; then
-        cat <<EOF >> /tmp/remote_deploy.sh
-echo 'export OPENAI_API_BASE="http://$BRIDGE_IP:$VAULT_PORT/v1"' >> /home/$GUEST_USER/.config/agentvault/env
-echo 'export OPENAI_API_KEY="$LOCAL_DUMMY_KEY"' >> /home/$GUEST_USER/.config/agentvault/env
-echo 'export ANTHROPIC_BASE_URL="http://$BRIDGE_IP:$VAULT_PORT/v1"' >> /home/$GUEST_USER/.config/agentvault/env
-echo 'export ANTHROPIC_API_KEY="$LOCAL_DUMMY_KEY"' >> /home/$GUEST_USER/.config/agentvault/env
-echo 'export DEEPSEEK_BASE_URL="http://$BRIDGE_IP:$VAULT_PORT/v1"' >> /home/$GUEST_USER/.config/agentvault/env
-echo 'export DEEPSEEK_API_KEY="$LOCAL_DUMMY_KEY"' >> /home/$GUEST_USER/.config/agentvault/env
-EOF
-    else
-        case "$PROVIDER" in
-            google)
-                cat <<EOF >> /tmp/remote_deploy.sh
-echo 'export GEMINI_API_KEY="$API_KEY"' >> /home/$GUEST_USER/.config/agentvault/env
-echo 'export AIDER_MODEL="gemini/gemini-2.5-pro"' >> /home/$GUEST_USER/.config/agentvault/env
-echo 'export OPENCODE_DEFAULT_PROVIDER="google"' >> /home/$GUEST_USER/.config/agentvault/env
-echo 'export PI_DEFAULT_PROVIDER="google"' >> /home/$GUEST_USER/.config/agentvault/env
-EOF
-                ;;
-            anthropic)
-                cat <<EOF >> /tmp/remote_deploy.sh
-echo 'export ANTHROPIC_API_KEY="$API_KEY"' >> /home/$GUEST_USER/.config/agentvault/env
-echo 'export AIDER_MODEL="anthropic/claude-3-5-sonnet-20241022"' >> /home/$GUEST_USER/.config/agentvault/env
-echo 'export OPENCODE_DEFAULT_PROVIDER="anthropic"' >> /home/$GUEST_USER/.config/agentvault/env
-echo 'export PI_DEFAULT_PROVIDER="anthropic"' >> /home/$GUEST_USER/.config/agentvault/env
-EOF
-                ;;
-            openai)
-                cat <<EOF >> /tmp/remote_deploy.sh
-echo 'export OPENAI_API_KEY="$API_KEY"' >> /home/$GUEST_USER/.config/agentvault/env
-echo 'export AIDER_MODEL="openai/gpt-4o"' >> /home/$GUEST_USER/.config/agentvault/env
-echo 'export OPENCODE_DEFAULT_PROVIDER="openai"' >> /home/$GUEST_USER/.config/agentvault/env
-echo 'export PI_DEFAULT_PROVIDER="openai"' >> /home/$GUEST_USER/.config/agentvault/env
-EOF
-                ;;
-            *)
-                cat <<EOF >> /tmp/remote_deploy.sh
-echo 'export OPENROUTER_API_KEY="$API_KEY"' >> /home/$GUEST_USER/.config/agentvault/env
-echo 'export ANTHROPIC_BASE_URL="https://openrouter.ai/api"' >> /home/$GUEST_USER/.config/agentvault/env
-echo 'export ANTHROPIC_AUTH_TOKEN="\$OPENROUTER_API_KEY"' >> /home/$GUEST_USER/.config/agentvault/env
-echo 'export ANTHROPIC_API_KEY=""' >> /home/$GUEST_USER/.config/agentvault/env
-echo 'export AIDER_MODEL="openrouter/anthropic/claude-3.5-sonnet"' >> /home/$GUEST_USER/.config/agentvault/env
-echo 'export OPENCODE_DEFAULT_PROVIDER="openrouter"' >> /home/$GUEST_USER/.config/agentvault/env
-echo 'export PI_DEFAULT_PROVIDER="openrouter"' >> /home/$GUEST_USER/.config/agentvault/env
-echo 'export DEEPSEEK_API_KEY="$API_KEY"' >> /home/$GUEST_USER/.config/agentvault/env
-EOF
-                ;;
-        esac
-    fi
+    # --- MODULAR SUBSCRIPT INJECTION ---
+    echo -n "    -> Sourcing harness module for $AGENT_TYPE... "
     cat <<EOF >> /tmp/remote_deploy.sh
-echo "OK"
+# --- FORGE VARIABLES INJECTED FOR SUBSCRIPTS ---
+export BRIDGE_IP="$BRIDGE_IP"
+export GUEST_USER="$GUEST_USER"
+export LOG="\$LOG"
+# -----------------------------------------------
 EOF
+
+    if [ -f "./harnesses/${AGENT_TYPE}.sh" ]; then
+        cat "./harnesses/${AGENT_TYPE}.sh" >> /tmp/remote_deploy.sh
+        echo "OK"
+    else
+        echo "WARN (No subscript found at ./harnesses/${AGENT_TYPE}.sh)"
+        echo "echo '    -> [WARN] No subscript found. Manual install required.'" >> /tmp/remote_deploy.sh
+    fi
+
 
     sudo -u "$TARGET_USER" scp -q -i "$SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null /tmp/remote_deploy.sh $GUEST_USER@$VM_IP:/tmp/
     sudo -u "$TARGET_USER" ssh -q -i "$SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null $GUEST_USER@$VM_IP "bash /tmp/remote_deploy.sh"
@@ -748,14 +658,20 @@ EOF
     virsh net-start "$NET_NAME" > /dev/null 2>&1
     virsh net-autostart "$NET_NAME" > /dev/null 2>&1
 
-    if [ "$INFERENCE_LOC" == "local" ]; then
-        SERVICE_NAME="${PROVIDER}-relay-${VM_NAME}.service"
+    # UNIVERSAL RELAYS: Map allowed AI inference ports to the host
+    RELAY_PORTS="8000 9931 11434"
+    if [ "$VAULT_TYPE" == "cloud" ]; then
+        RELAY_PORTS="4000 $RELAY_PORTS"
+    fi
+
+    for PORT in $RELAY_PORTS; do
+        SERVICE_NAME="ai-relay-${PORT}-${VM_NAME}.service"
         cat <<EOF > /etc/systemd/system/${SERVICE_NAME}
 [Unit]
-Description=Inference Engine Relay for $VM_NAME ($PROVIDER)
+Description=Universal AI Relay ($PORT) for $VM_NAME
 After=network.target libvirtd.service
 [Service]
-ExecStart=/usr/bin/socat TCP-LISTEN:$VAULT_PORT,bind=$BRIDGE_IP,reuseaddr,fork TCP:127.0.0.1:$HOST_PORT
+ExecStart=/usr/bin/socat TCP-LISTEN:$PORT,bind=$BRIDGE_IP,reuseaddr,fork TCP:127.0.0.1:$PORT
 Restart=always
 DynamicUser=yes
 [Install]
@@ -763,7 +679,7 @@ WantedBy=multi-user.target
 EOF
         systemctl daemon-reload
         systemctl enable --now ${SERVICE_NAME} > /dev/null 2>&1
-    fi
+    done
 
     # Swap the VM to the permanent vault network
     virsh dumpxml "$VM_NAME" > /tmp/${VM_NAME}_config.xml
